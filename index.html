@@ -650,6 +650,31 @@
 </head>
 <body>
 
+<!-- ============ PASSWORD GATE ============ -->
+<div id="password-gate" style="position:fixed; inset:0; z-index:9999; background:#0a0a0a; display:flex; align-items:center; justify-content:center; padding:24px;">
+  <div style="max-width:380px; width:100%; color:#fff; text-align:center;">
+    <div style="display:flex; flex-direction:column; align-items:center; gap:14px; margin-bottom:36px;">
+      <img id="gate-logo" alt="" style="width:56px; height:56px; object-fit:contain;">
+      <div style="font-family:'Archivo Black', 'Arial Black', sans-serif; font-size:24px; letter-spacing:0.02em;">FINAL FORM</div>
+      <div style="font-family:'JetBrains Mono', monospace; font-size:10px; letter-spacing:0.18em; color:#ff5a1f; text-transform:uppercase;">Coaching Planner</div>
+    </div>
+    <form id="gate-form" onsubmit="return checkPassword(event)">
+      <input id="gate-password" type="password" placeholder="Password" autocomplete="off"
+        style="width:100%; padding:14px 18px; background:transparent; border:1px solid #444; color:#fff; font-family:'JetBrains Mono', monospace; font-size:14px; letter-spacing:0.06em; outline:none; box-sizing:border-box;">
+      <label style="display:flex; align-items:center; gap:8px; margin-top:14px; cursor:pointer; font-family:'JetBrains Mono', monospace; font-size:11px; letter-spacing:0.06em; color:#888; user-select:none;">
+        <input id="gate-remember" type="checkbox" checked
+          style="width:14px; height:14px; accent-color:#ff5a1f; cursor:pointer;">
+        Remember on this device
+      </label>
+      <button type="submit"
+        style="width:100%; margin-top:14px; padding:14px; background:#ff5a1f; color:#fff; border:none; font-family:'JetBrains Mono', monospace; font-size:11px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; cursor:pointer;">
+        Unlock
+      </button>
+      <div id="gate-error" style="margin-top:14px; font-family:'JetBrains Mono', monospace; font-size:11px; color:#ff5a1f; min-height:18px;"></div>
+    </form>
+  </div>
+</div>
+
 <!-- ============ APP BAR (screen only) ============ -->
 <div class="appbar">
   <div class="appbar-group">
@@ -669,6 +694,9 @@
   </div>
 
   <div class="spacer"></div>
+
+  <span id="sync-status" style="font-family:'JetBrains Mono', monospace; font-size:10px; letter-spacing:0.06em; text-transform:uppercase; color:#888; margin-right:8px;"></span>
+  <button onclick="signOut()" title="Sign out (forget password on this device)" style="background:none; border:none; color:#888; font-family:'JetBrains Mono', monospace; font-size:10px; cursor:pointer; margin-right:8px; padding:4px 8px;">⏻</button>
 
   <div class="appbar-group">
     <button class="ghost" onclick="duplicateWeekToNext()" title="Duplicate this week into next week">⎘ Duplicate week</button>
@@ -827,8 +855,267 @@
    FINAL FORM — Coaching Planner
    ================================================================= */
 
-// ---------- Session types ----------
-// ---------- Session types (built-in + user-added) ----------
+// =============================================================
+// ╔═════════════════════════════════════════════════════════════╗
+// ║  CLOUD CONFIG — EDIT THESE 3 LINES                          ║
+// ║  Paste your Supabase project URL, your anon public key,     ║
+// ║  and your chosen password below.                            ║
+// ╚═════════════════════════════════════════════════════════════╝
+const SUPABASE_URL      = 'https://zggcjgtxmiihqfpzigsc.supabase.co';   // e.g. https://abcdefgh.supabase.co
+const SUPABASE_ANON_KEY = 'sb_publishable_K1iPwwsycR--Eu2HYju8lA_i2xyo7QU';        // long string starting with eyJ...
+// SHA-256 hash of your password. Generate with the tiny helper at the bottom of
+// these instructions, OR temporarily put your plain password in PLAINTEXT_PASSWORD
+// below — the file will hash it on first load and you can clear it after.
+const PASSWORD_HASH     = '77416a61eb1145b193695f6d3456371d0903007a3ff939664b9ffec88105814f';   // 64-character hex string
+const PLAINTEXT_PASSWORD = '';  // optional: type your password here once, the file hashes it for you on first load
+// =============================================================
+
+// Set the gate logo (uses the same FF mark embedded elsewhere)
+(function setGateLogo(){
+  const headerLogo = document.querySelector('.brand-mark img');
+  const gateLogo = document.getElementById('gate-logo');
+  if(headerLogo && gateLogo) gateLogo.src = headerLogo.src;
+})();
+
+// ---------- Password gate ----------
+async function sha256(text){
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// If a plaintext password was provided in config, hash and show it for the user
+// to copy back. Useful for first-time setup; should be cleared afterward.
+(async () => {
+  if(PLAINTEXT_PASSWORD && PLAINTEXT_PASSWORD.length > 0){
+    const hash = await sha256(PLAINTEXT_PASSWORD);
+    console.log('%c[Final Form] Your password hash:', 'color:#ff5a1f;font-weight:bold', hash);
+    console.log('%cCopy this hash into PASSWORD_HASH and clear PLAINTEXT_PASSWORD.', 'color:#666');
+  }
+})();
+
+async function checkPassword(ev){
+  if(ev) ev.preventDefault();
+  const input = document.getElementById('gate-password');
+  const err = document.getElementById('gate-error');
+  const rememberEl = document.getElementById('gate-remember');
+  err.textContent = '';
+  const entered = input.value;
+  if(!entered){ err.textContent = 'Enter a password.'; return false; }
+  const remember = rememberEl ? rememberEl.checked : false;
+  let storedHash = PASSWORD_HASH;
+  // First-time setup convenience: if PLAINTEXT_PASSWORD was set, accept it too
+  if(PLAINTEXT_PASSWORD && entered === PLAINTEXT_PASSWORD){
+    unlockGate(remember);
+    return false;
+  }
+  const enteredHash = await sha256(entered);
+  if(enteredHash === storedHash){
+    unlockGate(remember);
+  } else {
+    err.textContent = 'Wrong password.';
+    input.value = '';
+    input.focus();
+  }
+  return false;
+}
+
+const REMEMBER_KEY = 'ff_remember_until';
+const REMEMBER_DAYS = 90;
+
+function unlockGate(remember){
+  document.getElementById('password-gate').style.display = 'none';
+  sessionStorage.setItem('ff_unlocked', '1');
+  if(remember){
+    // Persist for 90 days on this device
+    const until = Date.now() + REMEMBER_DAYS * 24 * 60 * 60 * 1000;
+    localStorage.setItem(REMEMBER_KEY, String(until));
+  } else {
+    localStorage.removeItem(REMEMBER_KEY);
+  }
+  // Now boot the planner
+  bootPlanner();
+}
+
+function isRemembered(){
+  const v = localStorage.getItem(REMEMBER_KEY);
+  if(!v) return false;
+  const until = parseInt(v, 10);
+  if(isNaN(until) || Date.now() > until){
+    localStorage.removeItem(REMEMBER_KEY);
+    return false;
+  }
+  return true;
+}
+
+function signOut(){
+  if(!confirm('Sign out? You\'ll need to type your password next time.')) return;
+  sessionStorage.removeItem('ff_unlocked');
+  localStorage.removeItem(REMEMBER_KEY);
+  location.reload();
+}
+
+// If unlocked earlier this session OR remembered on this device, skip gate
+if(sessionStorage.getItem('ff_unlocked') === '1' || isRemembered()){
+  document.getElementById('password-gate').style.display = 'none';
+  sessionStorage.setItem('ff_unlocked', '1');
+}
+
+// Auto-focus password field
+setTimeout(() => {
+  const i = document.getElementById('gate-password');
+  if(i && document.getElementById('password-gate').style.display !== 'none') i.focus();
+}, 100);
+
+// ---------- Supabase client ----------
+let db = null;
+let cloudReady = false;
+let cloudOnline = navigator.onLine;
+let saveQueue = null;   // pending save promise
+let saveTimer = null;   // debounce timer
+
+const CONFIG_OK = SUPABASE_URL && !SUPABASE_URL.includes('PASTE') &&
+                  SUPABASE_ANON_KEY && !SUPABASE_ANON_KEY.includes('PASTE');
+
+async function loadSupabaseLib(){
+  if(window.supabase) return window.supabase;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js';
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+  return window.supabase;
+}
+
+async function initCloud(){
+  if(!CONFIG_OK){
+    setSyncStatus('⚠ Cloud not configured (using local only)', '#ff5a1f');
+    return false;
+  }
+  try{
+    const sb = await loadSupabaseLib();
+    db = sb.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    cloudReady = true;
+    return true;
+  }catch(e){
+    console.error('Cloud init failed:', e);
+    setSyncStatus('⚠ Offline (changes save locally)', '#ff5a1f');
+    return false;
+  }
+}
+
+// ---------- Cloud sync ----------
+async function loadFromCloud(){
+  if(!cloudReady) return null;
+  try{
+    setSyncStatus('Loading from cloud…', '#888');
+    const [athR, wkR, shR] = await Promise.all([
+      db.from('athletes').select('*'),
+      db.from('weeks').select('*'),
+      db.from('shared').select('*').eq('id','singleton').maybeSingle(),
+    ]);
+    if(athR.error) throw athR.error;
+    if(wkR.error) throw wkR.error;
+    if(shR.error) throw shR.error;
+
+    const cloud = {
+      athletes: {},
+      activeId: store.activeId || null,
+      library: (shR.data?.data?.library) || [],
+      savedWeeks: (shR.data?.data?.savedWeeks) || [],
+      customTypes: (shR.data?.data?.customTypes) || [],
+      customTargets: (shR.data?.data?.customTargets) || [],
+    };
+    for(const a of athR.data){
+      cloud.athletes[a.id] = { id:a.id, name:a.name, weeks:{}, createdAt:a.created_at };
+    }
+    for(const w of wkR.data){
+      if(cloud.athletes[w.athlete_id]){
+        cloud.athletes[w.athlete_id].weeks[w.week_key] = w.data;
+      }
+    }
+    if(!cloud.activeId || !cloud.athletes[cloud.activeId]){
+      const ids = Object.keys(cloud.athletes);
+      cloud.activeId = ids[0] || null;
+    }
+    setSyncStatus('Synced', '#5a7a4a');
+    return cloud;
+  }catch(e){
+    console.error('Cloud load failed:', e);
+    setSyncStatus('⚠ Cloud load failed (using local)', '#ff5a1f');
+    return null;
+  }
+}
+
+// Debounced full-store push. Simple and reliable.
+function scheduleCloudSave(){
+  if(!cloudReady) return;
+  clearTimeout(saveTimer);
+  setSyncStatus('Saving…', '#888');
+  saveTimer = setTimeout(() => { pushToCloud(); }, 800);
+}
+
+async function pushToCloud(){
+  if(!cloudReady) return;
+  try{
+    // 1. Upsert athletes
+    const athleteRows = Object.values(store.athletes).map(a => ({
+      id: a.id, name: a.name
+    }));
+    // 2. Upsert weeks
+    const weekRows = [];
+    for(const a of Object.values(store.athletes)){
+      for(const [wk_key, wk_data] of Object.entries(a.weeks || {})){
+        weekRows.push({ athlete_id: a.id, week_key: wk_key, data: wk_data });
+      }
+    }
+    // 3. Upsert shared (library, savedWeeks, customTypes, customTargets)
+    const sharedData = {
+      library: store.library || [],
+      savedWeeks: store.savedWeeks || [],
+      customTypes: store.customTypes || [],
+      customTargets: store.customTargets || [],
+    };
+
+    // Delete athletes not in current store (handles deletes)
+    const { data: existingA } = await db.from('athletes').select('id');
+    const existingIds = new Set((existingA || []).map(r => r.id));
+    const currentIds = new Set(athleteRows.map(r => r.id));
+    const toDelete = [...existingIds].filter(id => !currentIds.has(id));
+    if(toDelete.length){
+      await db.from('athletes').delete().in('id', toDelete);
+    }
+
+    if(athleteRows.length){
+      const r1 = await db.from('athletes').upsert(athleteRows);
+      if(r1.error) throw r1.error;
+    }
+    if(weekRows.length){
+      const r2 = await db.from('weeks').upsert(weekRows);
+      if(r2.error) throw r2.error;
+    }
+    const r3 = await db.from('shared').upsert({ id:'singleton', data: sharedData });
+    if(r3.error) throw r3.error;
+
+    setSyncStatus('Synced', '#5a7a4a');
+  }catch(e){
+    console.error('Cloud save failed:', e);
+    setSyncStatus('⚠ Save failed (will retry on next edit)', '#ff5a1f');
+  }
+}
+
+function setSyncStatus(text, color){
+  const el = document.getElementById('sync-status');
+  if(!el) return;
+  el.textContent = text;
+  el.style.color = color || '';
+}
+
+window.addEventListener('online',  () => { cloudOnline = true; setSyncStatus('Reconnected', '#5a7a4a'); pushToCloud(); });
+window.addEventListener('offline', () => { cloudOnline = false; setSyncStatus('Offline — changes save locally', '#ff5a1f'); });
+
+
 const BUILTIN_TYPES = [
   {key:'run',      label:'Run',      bg:'#ff5a1f', fg:'#ffffff'},
   {key:'strength', label:'Strength', bg:'#0a0a0a', fg:'#ffffff'},
@@ -931,7 +1218,10 @@ function loadStore(){
     return {athletes:{}, activeId:null, library:[], savedWeeks:[], customTypes:[], customTargets:[]};
   }
 }
-function saveStore(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(store)); }
+function saveStore(){
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+  scheduleCloudSave();
+}
 
 let store = loadStore();
 refreshTypes();
@@ -1795,26 +2085,54 @@ function renderAll(){
   refreshFeedbackIndicator();
 }
 
+// Pre-render once with localStorage cache for instant display
 attachHeaderListeners();
+renderAll();
 
-// First-run: seed a demo athlete so the file isn't empty on first open
-if(Object.keys(store.athletes).length === 0){
-  createAthlete('Demo Athlete');
-  const a = getActiveAthlete();
-  const wk = getOrInitWeek(a, activeWeekKey);
-  wk.days = [
-    [{typeKey:'easy',title:'Easy Run + Mobility',detail:'45 min easy aerobic run, conversational pace. Followed by 10 min hip + ankle mobility flow.',targets:[{label:'Pace',value:'5:00–5:15/km'},{label:'HR',value:'Zone 2'},{label:'RPE',value:'3–4/10'}],note:'Keep this honestly easy — if you can\'t talk in full sentences, slow down.'}],
-    [{typeKey:'strength',title:'Strength — Lower Body',detail:'Back squat 4×6 @ 75%<br>Romanian deadlift 3×8<br>Walking lunges 3×12/leg<br>Plank 3×45s',targets:[{label:'RPE',value:'7/10'},{label:'Rest',value:'90s'}],note:'Focus on bar speed — quality over load.'}],
-    [{typeKey:'run',title:'Threshold Intervals',detail:'15 min warm-up<br>5× 5 min @ threshold, 90s jog<br>10 min cool-down',targets:[{label:'Pace',value:'3:49–3:55/km'},{label:'HR',value:'Zone 4'},{label:'RPE',value:'7–8/10'}],note:'Even effort across all 5 reps.'}],
-    [{typeKey:'hiit',title:'Conditioning — HIIT',detail:'10 rounds: 30s max effort bike, 30s rest<br>Finisher: 3× 20 burpees for time',targets:[{label:'RPE',value:'8–9/10'},{label:'HR',value:'Zone 4–5'}],note:'Short and brutal.'}],
-    [{typeKey:'rest',title:'Rest / Active Recovery',detail:'Full rest or 20–30 min easy walk. Prioritise sleep and nutrition.',targets:[],note:''}],
-    [{typeKey:'cross',title:'Cross Training — Bike',detail:'90 min easy zone 2 ride. Flat route, steady cadence 85–90rpm.',targets:[{label:'HR',value:'Zone 2'},{label:'RPE',value:'4–5/10'}],note:'Recovery volume — keep it boring on purpose.'}],
-    [{typeKey:'rest',title:'Rest Day',detail:'Full rest. Log your week — send any notes before the check-in.',targets:[],note:''}],
-  ];
-  saveStore();
+async function bootPlanner(){
+  // Try cloud first
+  const ok = await initCloud();
+  if(ok){
+    const cloud = await loadFromCloud();
+    if(cloud){
+      // Replace local store with cloud data (cloud is source of truth)
+      store.athletes = cloud.athletes;
+      store.activeId = cloud.activeId;
+      store.library = cloud.library;
+      store.savedWeeks = cloud.savedWeeks;
+      store.customTypes = cloud.customTypes;
+      store.customTargets = cloud.customTargets;
+      refreshTypes();
+      refreshTargetOptions();
+      // Persist to local cache
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    }
+  }
+
+  // If still empty after cloud load, seed a demo athlete
+  if(Object.keys(store.athletes).length === 0){
+    createAthlete('Demo Athlete');
+    const a = getActiveAthlete();
+    const wk = getOrInitWeek(a, activeWeekKey);
+    wk.days = [
+      [{typeKey:'easy',title:'Easy Run + Mobility',detail:'45 min easy aerobic run, conversational pace. Followed by 10 min hip + ankle mobility flow.',targets:[{label:'Pace',value:'5:00–5:15/km'},{label:'HR',value:'Zone 2'},{label:'RPE',value:'3–4/10'}],note:'Keep this honestly easy — if you can\'t talk in full sentences, slow down.'}],
+      [{typeKey:'strength',title:'Strength — Lower Body',detail:'Back squat 4×6 @ 75%<br>Romanian deadlift 3×8<br>Walking lunges 3×12/leg<br>Plank 3×45s',targets:[{label:'RPE',value:'7/10'},{label:'Rest',value:'90s'}],note:'Focus on bar speed — quality over load.'}],
+      [{typeKey:'run',title:'Threshold Intervals',detail:'15 min warm-up<br>5× 5 min @ threshold, 90s jog<br>10 min cool-down',targets:[{label:'Pace',value:'3:49–3:55/km'},{label:'HR',value:'Zone 4'},{label:'RPE',value:'7–8/10'}],note:'Even effort across all 5 reps.'}],
+      [{typeKey:'hiit',title:'Conditioning — HIIT',detail:'10 rounds: 30s max effort bike, 30s rest<br>Finisher: 3× 20 burpees for time',targets:[{label:'RPE',value:'8–9/10'},{label:'HR',value:'Zone 4–5'}],note:'Short and brutal.'}],
+      [{typeKey:'rest',title:'Rest / Active Recovery',detail:'Full rest or 20–30 min easy walk. Prioritise sleep and nutrition.',targets:[],note:''}],
+      [{typeKey:'cross',title:'Cross Training — Bike',detail:'90 min easy zone 2 ride. Flat route, steady cadence 85–90rpm.',targets:[{label:'HR',value:'Zone 2'},{label:'RPE',value:'4–5/10'}],note:'Recovery volume — keep it boring on purpose.'}],
+      [{typeKey:'rest',title:'Rest Day',detail:'Full rest. Log your week — send any notes before the check-in.',targets:[],note:''}],
+    ];
+    saveStore();  // pushes to cloud too
+  }
+
+  renderAll();
 }
 
-renderAll();
+// If unlocked already (returning within same session), boot now
+if(sessionStorage.getItem('ff_unlocked') === '1'){
+  bootPlanner();
+}
 </script>
 
 </body>
